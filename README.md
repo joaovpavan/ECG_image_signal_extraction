@@ -18,7 +18,7 @@ python test.py path/to/image.png [--threshold VALUE] [--invert] [--debug]
 ### Parameters:
 - `image_path`: Path to input ECG image file
 - `--threshold`: Binarization threshold (0-255), default=180
-- `--invert`: Use when the signal is lighter than the background
+- `--invert`: Invert signal and background binary values
 - `--debug`: Show debugging visualizations for algorithm steps
 
 ## Status
