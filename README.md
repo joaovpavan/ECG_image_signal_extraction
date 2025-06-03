@@ -12,7 +12,7 @@ Available at: https://www.sciencedirect.com/science/article/abs/pii/S01692607220
 ## Usage
 
 ```
-python main.py path/to/image.png [--threshold VALUE] [--invert] [--debug]
+python test.py path/to/image.png [--threshold VALUE] [--invert] [--debug]
 ```
 
 ### Parameters:
