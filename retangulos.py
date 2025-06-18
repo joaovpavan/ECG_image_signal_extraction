@@ -2,8 +2,6 @@ import cv2
 import numpy as np
 import os
 
-#Ainda nao funciona, mas a estrutura parece promissor
-
 IMAGE_PATH = 'IMAGE_PATH'
 OUTPUT_DIR = 'crops'
 
@@ -12,13 +10,12 @@ UPPER_HSV = np.array([180, 255, 255])
 
 MIN_AREA = 200
 
-ERODE_KERNEL = (5, 5)  
+ERODE_KERNEL = (1, 1)  
 CLOSE_KERNEL = (15, 15)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 def save_debug(name, img):
     cv2.imwrite(name, img)
-
 
 img = cv2.imread(IMAGE_PATH)
 if img is None:
@@ -29,15 +26,15 @@ hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 mask = cv2.inRange(hsv, LOWER_HSV, UPPER_HSV)
 save_debug('mask.png', mask)
 
-kernel_erode = cv2.getStructuringElement(cv2.MORPH_RECT, ERODE_KERNEL)
-eroded = cv2.erode(mask, kernel_erode, iterations=1)
+kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+mask_dilated = cv2.dilate(mask, kernel_dilate, iterations=1)
 
-kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, CLOSE_KERNEL)
-opened = cv2.morphologyEx(eroded, cv2.MORPH_CLOSE, kernel_close)
-save_debug('opened.png', opened)
-
-contours, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+contours, _ = cv2.findContours(mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 print(f"Contornos encontrados: {len(contours)}")
+
+debug = cv2.cvtColor(mask_dilated, cv2.COLOR_GRAY2BGR)
+cv2.drawContours(debug, contours, -1, (0, 255, 0), 1)
+cv2.imwrite("mask_dilated_debug.png", debug)
 
 rois = []
 for cnt in contours:
@@ -58,4 +55,3 @@ for i, (x, y, w, h) in enumerate(rois, 1):
 ecg_boxes = 'ecg_with_boxes.png'
 cv2.imwrite(ecg_boxes, orig)
 print(f"Cortadas {len(rois)} regioes em '{OUTPUT_DIR}'")
-print("Ajuste LOWER_HSV, UPPER_HSV, MIN_AREA e kernels conforme debug (mask.png e opened.png).")
