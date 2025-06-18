@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 IMAGE_PATH = 'IMAGE_PATH'
-OUTPUT_DIR = 'crops'
+OUTPUT_DIR = 'sinais'
 
 LOWER_HSV = np.array([160, 30, 30])
 UPPER_HSV = np.array([180, 255, 255])
