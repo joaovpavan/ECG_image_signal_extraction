@@ -8,7 +8,7 @@ OUTPUT_DIR = 'crops'
 LOWER_HSV = np.array([160, 30, 30])
 UPPER_HSV = np.array([180, 255, 255])
 
-MIN_AREA = 200
+MIN_AREA = 2000
 
 ERODE_KERNEL = (1, 1)  
 CLOSE_KERNEL = (15, 15)
