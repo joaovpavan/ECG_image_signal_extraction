@@ -1,0 +1,236 @@
+import argparse
+import sys
+from dataclasses import dataclass
+from math import sqrt, asin, pi
+from typing import List, Optional, Iterator
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+import os
+import pandas as pd
+import cv2
+from skimage.morphology import skeletonize
+
+@dataclass(frozen=True)
+class Point:
+    x: float
+    y: float
+
+    @property
+    def index(self) -> int:
+        return round(self.x)
+
+    def __repr__(self) -> str:
+        return f"({self.x:.1f}, {self.y:.1f})"
+
+
+def euclidean_distance(x: float, y: float) -> float:
+    return sqrt(x**2 + y**2)
+
+
+def angle_from_offsets(x: float, y: float) -> float:
+    dist = euclidean_distance(x, y)
+    if dist < 1e-6:
+        return 0.0
+    return asin(y / dist) * 180 / pi
+
+
+def flatten(lst):
+    return [item for sublist in lst for item in sublist]
+
+
+def find_contiguous_regions(one_dim_image: np.ndarray) -> List[tuple]:
+    regions = []
+    start = None
+    for idx, val in enumerate(one_dim_image):
+        if val > 0 and start is None:
+            start = idx
+        elif val == 0 and start is not None:
+            regions.append((start, idx - 1))
+            start = None
+    if start is not None:
+        regions.append((start, len(one_dim_image) - 1))
+    return regions
+
+
+def find_contiguous_region_centers(one_dim_image: np.ndarray) -> List[int]:
+    return [int((s + e) / 2) for s, e in find_contiguous_regions(one_dim_image)]
+
+
+def get_point_locations(image: np.ndarray) -> List[List[Point]]:
+    locations = []
+    for col_idx, col_data in enumerate(image.T):
+        centers = find_contiguous_region_centers(col_data)
+        points = [Point(float(col_idx), float(r)) for r in centers]
+        locations.append(points)
+    return locations
+
+
+def distance_between_points(a: Point, b: Point) -> float:
+    return euclidean_distance(a.x - b.x, a.y - b.y)
+
+
+def angle_between_points(a: Point, b: Point) -> float:
+    dx = b.x - a.x
+    dy = b.y - a.y
+    return angle_from_offsets(dx, dy)
+
+
+def angle_similarity(a1: float, a2: float) -> float:
+    d = abs(a1 - a2)
+    return (180 - min(d, 360 - d)) / 180
+
+
+def path_score(cur: Point, cand: Point, cand_angle: float) -> float:
+    DW, AW = 0.6, 0.4
+    dist = distance_between_points(cand, cur)
+    ang = angle_between_points(cand, cur)
+    ang_diff = 1 - angle_similarity(ang, cand_angle)
+    return dist * DW + ang_diff * AW
+
+
+def get_adjacent_points(points_by_col, dp, col, lookback=3):
+    lb = max(0, col - lookback)
+    cands = []
+    for ci in range(lb, col):
+        for p in points_by_col[ci]:
+            if p in dp:
+                s, _, ang = dp[p]
+                cands.append((s, p, ang))
+    return cands
+
+
+def interpolate_points(a: Point, b: Point) -> Iterator[Point]:
+    if abs(a.x - b.x) < 1e-6:
+        yield a
+        return
+    m = (b.y - a.y) / (b.x - a.x)
+    for x in np.arange(min(a.x, b.x), max(a.x, b.x), 1.0):
+        y = a.y + m * (x - a.x)
+        yield Point(x, y)
+
+
+def points_to_signal(points: List[Point], w: int, h: int) -> np.ndarray:
+    if not points:
+        return np.array([np.nan] * w)
+    pts = sorted(points, key=lambda p: p.x)
+    sig = np.full(w, np.nan)
+    for i in range(len(pts) - 1):
+        s, e = pts[i], pts[i + 1]
+        if 0 <= s.index < w:
+            sig[s.index] = s.y
+        for p in interpolate_points(s, e):
+            ix = p.index
+            if 0 <= ix < w and np.isnan(sig[ix]):
+                sig[ix] = p.y
+    if pts and 0 <= pts[-1].index < w:
+        sig[pts[-1].index] = pts[-1].y
+    return h - sig
+
+
+def extract_signal(bin_img: np.ndarray, debug: bool = False) -> Optional[np.ndarray]:
+    h, w = bin_img.shape
+    pts_by_col = get_point_locations(bin_img)
+    all_pts = flatten(pts_by_col)
+    if not all_pts:
+        return None
+    if debug:
+        plt.figure(figsize=(12, 6))
+        plt.imshow(bin_img, cmap='gray')
+        plt.scatter([p.x for p in all_pts], [p.y for p in all_pts], s=2, c='red', alpha=0.5)
+        plt.show()
+    dp = {p: (0.0, None, 0.0) for p in pts_by_col[0]}
+    for ci in range(1, len(pts_by_col)):
+        for cur in pts_by_col[ci]:
+            cands = get_adjacent_points(pts_by_col, dp, cur.index)
+            if not cands:
+                dp[cur] = (0.0, None, 0.0)
+                continue
+            best, prv, ang0 = float('inf'), None, 0.0
+            for sc, pp, ang in cands:
+                tot = sc + path_score(cur, pp, ang)
+                if tot < best:
+                    best, prv, ang0 = tot, pp, angle_between_points(pp, cur)
+            dp[cur] = (best, prv, ang0)
+    end_col = max(0, w - w // 10)
+    ends = [(dp[p][0], p) for col in pts_by_col[end_col:] for p in col if p in dp]
+    if not ends:
+        return None
+    _, best_end = min(ends, key=lambda x: x[0])
+    path = []
+    cur = best_end
+    while cur is not None:
+        path.append(cur)
+        _, cur, _ = dp[cur]
+    path.reverse()
+    if debug:
+        plt.figure(figsize=(12, 6))
+        plt.imshow(bin_img, cmap='gray')
+        xs = [p.x for p in path]
+        ys = [p.y for p in path]
+        plt.plot(xs, ys, 'r-', linewidth=1.5)
+        plt.show()
+    return points_to_signal(path, w, h)
+
+
+def remove_grid_adaptively(img_array: np.ndarray, initial_threshold: int = 180, debug: bool = False) -> np.ndarray:
+    best_img = img_array.copy()
+    min_signal_energy = float('inf')
+    best_thresh = initial_threshold
+    for thresh in range(initial_threshold - 30, initial_threshold + 30, 5):
+        _, binary = cv2.threshold(img_array, thresh, 255, cv2.THRESH_BINARY_INV)
+        cleaned = cv2.medianBlur(binary, 3)
+        signal = extract_signal(cleaned)
+        if signal is not None:
+            energy = np.nansum(np.diff(signal) ** 2)
+            if energy < min_signal_energy:
+                min_signal_energy = energy
+                best_img = cleaned
+                best_thresh = thresh
+    skel = skeletonize(best_img // 255)
+    skel_img = (skel * 255).astype(np.uint8)
+    if debug:
+        print(f"Melhor limiar: {best_thresh}")
+        plt.figure(figsize=(6, 6)); plt.imshow(skel_img, cmap='gray'); plt.title("Esqueleto após remoção de grade"); plt.axis('off'); plt.show()
+    return skel_img
+
+
+def process_lotes(root_dir: str, threshold: int = 180, debug: bool = False):
+    out_dir = root_dir.rstrip('/\\') + '_extraidos'
+    os.makedirs(out_dir, exist_ok=True)
+    for lote in sorted(os.listdir(root_dir)):
+        dir_lote = os.path.join(root_dir, lote)
+        if not os.path.isdir(dir_lote):
+            continue
+        lote_out = os.path.join(out_dir, lote)
+        csv_dir = os.path.join(lote_out, 'csv')
+        os.makedirs(csv_dir, exist_ok=True)
+        for img_name in sorted(os.listdir(dir_lote)):
+            if not img_name.lower().endswith('.png'):
+                continue
+            img_path = os.path.join(dir_lote, img_name)
+            arr = np.array(Image.open(img_path).convert('L'))
+            arr = arr[120:, :]
+            proc = remove_grid_adaptively(arr, initial_threshold=threshold, debug=debug)
+            sig = extract_signal(proc, debug=debug)
+            if sig is None:
+                print(f"  [X] Nenhum sinal extraído: {img_name}")
+                continue
+            base = os.path.splitext(img_name)[0]
+            pd.DataFrame({'sinal': sig}).to_csv(os.path.join(csv_dir, f"{base}.csv"), index=False)
+            print(f"  [✔] CSV salvo: {base}.csv")
+            fig, ax = plt.subplots(figsize=(12, 4))
+            ax.plot(sig)
+            ax.set_xlim(0, len(sig))
+            plt.tight_layout()
+            plt.savefig(os.path.join(lote_out, f"{base}_sinal.png"))
+            plt.close()
+            print(f"  [✔] Gráfico salvo: {base}_sinal.png")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('diretorio')
+    parser.add_argument('--threshold', type=int, default=180)
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args()
+    process_lotes(args.diretorio, threshold=args.threshold, debug=args.debug)
